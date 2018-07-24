@@ -62,22 +62,28 @@ coordinates(summary.sp) <- ~longitude+latitude
 crs(summary.sp) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") #we know it from API meta
 summary.sp <- spTransform(summary.sp, CRS("+init=epsg:3812"))
 
+# SPATIAL
+
 wallonia.sp <- raster::getData('GADM', country = "BE ", level = 1)
 wallonia.sp <- subset(wallonia.sp, NAME_1 == "Wallonie")
 wallonia.sp <- spTransform(wallonia.sp, CRS("+init=epsg:3812"))
 
 grid.sf <- build.vs.grid.fun("BE", "Wallonie", 1000, "centers", sf.bool = TRUE, EPSG.chr = "3812")
 grid.sp <- as(grid.sf, "Spatial")
-
 # grid.sp <- spTransform(grid.sp, CRS("+init=epsg:3812"))
 grid.df = as.data.frame(grid.sp)
 #grid.sp <- spTransform(grid.sp, CRS("+init=epsg:3812"))
 grid.grid <- grid.sp
 gridded(grid.grid) = TRUE
 
+# END SPATIAL
+
 # interpolating
 #defExHyd.idw = idw(defExHyd~1, summary.sp, grid.grid)
 #ind_plu.idw = idw(ind_plu~1, summary.sp, grid.grid)
+
+
+# INTERPOLATION MLR
 
 # interpolating with gstat mlr
 summary.df = as.data.frame(summary.sp)
@@ -94,13 +100,11 @@ mod.idw = train(lrn.idw, task.defExHyd)
 # predicting
 newdata.pred.idw = predict(object = mod.idw, newdata = grid.df)
 mlr.idw <- dplyr::bind_cols(grid.df, newdata.pred.idw$data)
-# mapping
-mlr.idw.sp = mlr.idw
-coordinates(mlr.idw.sp) <- ~x+y
-gridded(mlr.idw.sp) = TRUE
-pred.plot <- spplot(mlr.idw.sp["response"], do.log = T, colorkey = TRUE, main = mod.krg$learner$id)
-pred.plot
 
+
+# MAPPING
+
+# DYNAMIC
 # keeping what we need
 interpolated.df <- mlr.idw[c(4,5,6,7)]
 # making it spatial object class sf
@@ -131,18 +135,26 @@ head(interpolated.pg.sf)
 interpolated.pg.sf <- st_transform(interpolated.pg.sf, crs = 4326)
 #interacrtive mapping
 interactive.map = leafletize(interpolated.pg.sf, se.bool = FALSE)
-#making interpolated a sp for static map
-interpolated.sp = as(interpolated.sf, "Spatial")
-interpolated.sp.px = as(interpolated.sp, "SpatialPixelDataFrame")
+
+#STATIC
+interpolated.sp = mlr.idw
+coordinates(interpolated.sp) <- ~x+y
+gridded(interpolated.sp) = TRUE
+pred.awful.map <- spplot(mlr.idw.sp["response"], do.log = T, colorkey = TRUE, main = mod.krg$learner$id)
+interpolated.sp.grid = as(interpolated.sp, "SpatialGridDataFrame")
+boundaries.sf <- st_as_sf(wallonia.sp, crs =  "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+boundaries.sf <- st_transform(boundaries.sf, crs = "+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+interpolated.df.grid = as.data.frame(interpolated.sp.grid)
+interpolated.df.grid  = dplyr::rename(interpolated.df.grid, coords.x1 = x, coords.x2 = y)
 
 # mapping static
-defExHyd.plot.map <- build.static.ggmap(gridded.data.df = as.data.frame(defExHyd.idw.grid),
+defExHyd.plot.map = build.static.ggmap(gridded.data.df = interpolated.df.grid,
   boundaries.sf = boundaries.sf,
   layer.error.bool = FALSE,
   legend.error.bool = FALSE,
   pretty_breaks.bool = TRUE,
   title.chr = "déficit hydrique",
-  target.chr = "var1.pred",
+  target.chr = "response",
   legend.chr = "mm"
 )
 
