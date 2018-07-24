@@ -123,12 +123,17 @@ st_crs(grid.pg.sf) <- 3812
 #grid.sf <- st_transform(grid.pg.sf, crs = 4326)
 # injecting the prediction and se data into the polygon grid doing a spatial join
 # interpolated.sf <- st_join(grid.sf, interpolated.sf) %>% select(one_of(c("response", "se")))
-interpolated.pg.sf = dplyr::bind_cols(grid.pg.sf, interpolated.sf) #FIXME
+interpolated.pg.sf = st_join(grid.pg.sf, interpolated.sf) #FIXME
 interpolated.pg.sf = interpolated.pg.sf[c(2,3,4)]
 # Do we have polygons ?
 head(interpolated.pg.sf)
 #project to geographic CRS
 interpolated.pg.sf <- st_transform(interpolated.pg.sf, crs = 4326)
+#interacrtive mapping
+interactive.map = leafletize(interpolated.pg.sf, se.bool = FALSE)
+#making interpolated a sp for static map
+interpolated.sp = as(interpolated.sf, "Spatial")
+interpolated.sp.px = as(interpolated.sp, "SpatialPixelDataFrame")
 
 # mapping static
 defExHyd.plot.map <- build.static.ggmap(gridded.data.df = as.data.frame(defExHyd.idw.grid),
