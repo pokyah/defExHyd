@@ -7,8 +7,6 @@ library(tidyr)
 library(sp)
 library(raster)
 library(sf)
-library(ggsn) #must be from github
-library(sf)
 library(leaflet)
 library(dplyr)
 
@@ -74,6 +72,22 @@ grid.sp <- spTransform(grid.sp, CRS("+init=epsg:3812"))
 grid.grid <- grid.sp
 gridded(grid.grid) = TRUE
 
+# boundaries.sp <- raster::getData('GADM', country="BE", level=1, path = "./external-data/Boundaries") %>%
+#   subset(NAME_1 == "Wallonie")
+# boundaries.sp <- spTransform(boundaries.sp, CRSobj = lambert2008.crs)
+#
+# grid <- makegrid(boundaries.sp, n = 35000)
+# colnames(grid) <- c('x','y')
+# grid_pt <- SpatialPoints(coords = grid,
+#                          proj4string=crs(boundaries.sp))
+
+# # find all points in `grd_pts` that fall within `spdf`
+# grid_pt_in <- grid_pt[boundaries.sp, ]
+# crs(grid_pt_in) <- crs(summary.sp)
+# grid.df <- as.data.frame(coordinates(grid_pt_in))
+# ggplot(grid.df) +
+#   geom_point(aes(x=x,y=y))
+
 # grid.sp <- spTransform(grid.sp, CRS("+init=epsg:4326"))
 # summary.sp <- spTransform(summary.sp, CRS("+init=epsg:4326"))
 # wallonia.sp <- spTransform(summary.sp, CRS("+init=epsg:4326"))
@@ -82,12 +96,18 @@ gridded(grid.grid) = TRUE
 defExHyd.idw = idw(defExHyd~1, summary.sp, grid.grid)
 ind_plu.idw = idw(ind_plu~1, summary.sp, grid.grid)
 
-defExHyd.idw.grid <- as(defExHyd.idw, "SpatialGridDataFrame") # ==> NA's
-ind_plu.idw.grid <- as(ind_plu.idw, "SpatialGridDataFrame") # ==> NA's
+defExHyd.idw.grid = as(defExHyd.idw, "SpatialGridDataFrame") # ==> NA's
+ind_plu.idw.grid = as(ind_plu.idw, "SpatialGridDataFrame") # ==> NA's
+
+defExHyd.idw.df <- as.data.frame(defExHyd.idw.grid)
+
+boundaries.sf <- st_as_sf(wallonia.sp, crs =  "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+boundaries.sf <- st_transform(boundaries.sf, crs = "+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+
 
 # mapping
-defExHyd.plot.map <- static.ggmap(gridded.data.df = as.data.frame(defExHyd.idw),
-  boundaries.sf = st_as_sf(wallonia.sp),
+defExHyd.plot.map <- build.static.ggmap(gridded.data.df = as.data.frame(defExHyd.idw.grid),
+  boundaries.sf = boundaries.sf,
   layer.error.bool = FALSE,
   legend.error.bool = FALSE,
   pretty_breaks.bool = TRUE,
@@ -95,6 +115,10 @@ defExHyd.plot.map <- static.ggmap(gridded.data.df = as.data.frame(defExHyd.idw),
   target.chr = "var1.pred",
   legend.chr = "ahah"
 )
+
+# https://stackoverflow.com/questions/37830819/developing-shiny-app-as-a-package-and-deploying-it-to-shiny-server
+
+
 # defExHyd.plot <- spplot(defExHyd.idw["var1.pred"], do.log = F, colorkey = TRUE,  main = "Def Hyd")
 # ind_plu.plot <- spplot(ind_plu.idw["var1.pred"],  main = "Ind plu")
 
@@ -216,5 +240,4 @@ html <- list(h3(paste0("interactive prediction map")),
 )
 tagList(html)
 ```
-
 
