@@ -1,6 +1,5 @@
 library(agrometAPI) # github pokyah
 library(geoTools) # github pokyah
-library(dplyr)
 library(chron)
 library(gstat)
 library(tidyr)
@@ -9,10 +8,39 @@ library(raster)
 library(sf)
 library(leaflet)
 library(dplyr)
+library(mlr)
 source("gstat.R")
 
-dfrom = "2018-07-01"
-dto = "2018-07-03"
+# wallonia borders (for EPSG CRS and proj4 see epsg.io)
+wallonia.sp <- raster::getData('GADM', country = "BE ", level = 1)
+wallonia.sp <- subset(wallonia.sp, NAME_1 == "Wallonie")
+wallonia.sp <- spTransform(wallonia.sp, CRS("+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs "))
+wallonia.sf = st_as_sf(wallonia.sp)
+
+# interpolation grid - https://stackoverflow.com/questions/43436466/create-grid-in-r-for-kriging-in-gstat/43444232
+grd = sp::makegrid(x = wallonia.sp, cellsize = 250,
+  pretty = TRUE)
+colnames(grd) <- c('x','y')
+grd_pts <- SpatialPoints(coords = grd,
+  proj4string = CRS(proj4string(wallonia.sp)))
+grid.sp <- grd_pts[wallonia.sp, ]
+grid.df = as.data.frame(grid.sp)
+grid.grid <- grid.sp
+gridded(grid.grid) = TRUE
+grid.sf = st_as_sf(grid.sp)
+
+# extracting normal data from API
+plu.norm <- get_from_agromet_API(table_name = "get_tmy", sensors = "plu_sum", month_day = "all")
+plu.norm <- prepare_agromet_API_data.fun(plu.norm, table_name = "get_tmy")
+plu.norm <- plu.norm %>%
+  mutate(julian = julian(month, day, 1970) + 1)
+
+######
+
+
+
+dfrom = "2018-02-01"
+dto = "2018-03-04"
 
 plu.obs <- get_from_agromet_API(dfrom = dfrom, dto = dto, sensors = "plu")
 plu.obs <- prepare_agromet_API_data.fun(plu.obs)
@@ -33,13 +61,9 @@ plu.obs <- plu.obs  %>%
   filter(state == "Ok") %>%
   filter(!is.na(plu)) %>%
   mutate(date = as.Date.POSIXct(mtime)) %>%
+  filter(from <= min(plu.obs$from, na.rm = TRUE)) %>%
   group_by(date) %>%
   mutate(cum.obs = sum(plu))
-
-plu.norm <- get_from_agromet_API(table_name = "get_tmy", sensors = "plu_sum", month_day = "all")
-plu.norm <- prepare_agromet_API_data.fun(plu.norm, table_name = "get_tmy")
-plu.norm <- plu.norm %>%
-  mutate(julian = julian(month, day, 1970) + 1)
 
 plu.obs$julian <- julian(plu.obs$date, format = "%Y/%m/%d", origin = as.Date("2018-01-01"))[1]
 
@@ -57,117 +81,74 @@ summary <- summary %>%
 summary <- summary %>%
   left_join(st_info, by = "sid")
 
+# SPATIAL
+# make station data spatial
 summary.sp <- data.frame(summary)
 coordinates(summary.sp) <- ~longitude+latitude
 crs(summary.sp) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") #we know it from API meta
-summary.sp <- spTransform(summary.sp, CRS("+init=epsg:3812"))
-
-# SPATIAL
-
-wallonia.sp <- raster::getData('GADM', country = "BE ", level = 1)
-wallonia.sp <- subset(wallonia.sp, NAME_1 == "Wallonie")
-wallonia.sp <- spTransform(wallonia.sp, CRS("+init=epsg:3812"))
-
-grid.sf <- build.vs.grid.fun("BE", "Wallonie", 1000, "centers", sf.bool = TRUE, EPSG.chr = "3812")
-grid.sp <- as(grid.sf, "Spatial")
-# grid.sp <- spTransform(grid.sp, CRS("+init=epsg:3812"))
-grid.df = as.data.frame(grid.sp)
-#grid.sp <- spTransform(grid.sp, CRS("+init=epsg:3812"))
-grid.grid <- grid.sp
-gridded(grid.grid) = TRUE
-
-# END SPATIAL
-
-# interpolating
-#defExHyd.idw = idw(defExHyd~1, summary.sp, grid.grid)
-#ind_plu.idw = idw(ind_plu~1, summary.sp, grid.grid)
+summary.sp <- spTransform(summary.sp, CRS("+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs "))
 
 
-# INTERPOLATION MLR
 
-# interpolating with gstat mlr
-summary.df = as.data.frame(summary.sp)
-# renaming cols
-summary.df = dplyr::rename(summary.df, x = longitude, y = latitude)
-grid.df = dplyr::rename(grid.df, x = coords.x1, y = coords.x2)
+# INTERPOLATION
+defExHyd.idw.sp = idw(defExHyd~1, summary.sp, grid.grid)
+defExHyd.idw.df = data.frame(defExHyd.idw.sp)
+defExHyd.idw.sf <- st_as_sf(defExHyd.idw.sp)
 
-# defining the regression task
-task.defExHyd = makeRegrTask(id = "defExHyd",  data = summary.df[c(4,8,9)], target = "defExHyd")
-# defining the learner
-lrn.idw = makeLearner(cl = "regr.gstat", id = "idw", predict.type = "response", locations = ~x+y)
-# training the model
-mod.idw = train(lrn.idw, task.defExHyd)
-# predicting
-newdata.pred.idw = predict(object = mod.idw, newdata = grid.df)
-mlr.idw <- dplyr::bind_cols(grid.df, newdata.pred.idw$data)
+indPlu.idw.sp = idw(ind_plu~1, summary.sp, grid.grid)
+indPlu.idw.df = data.frame(defExHyd.idw.sp)
+indPlu.idw.sf <- st_as_sf(defExHyd.idw.sp)
 
+# MAPPING - Static
+defExHyd.idw.grid = defExHyd.idw.sp
+gridded(defExHyd.idw.grid) = TRUE
+defExHyd.idw.grid = as(defExHyd.idw.grid, "SpatialGridDataFrame")
+defExHyd.idw.grid.df = as.data.frame(defExHyd.idw.grid)
+defExHyd.idw.grid.df  = dplyr::rename(defExHyd.idw.grid.df, coords.x1 = x, coords.x2 = y)
+indPlu.idw.grid = indPlu.idw.sp
+gridded(indPlu.idw.grid) = TRUE
+indPlu.idw.grid = as(indPlu.idw.grid, "SpatialGridDataFrame")
+indPlu.idw.grid.df = as.data.frame(indPlu.idw.grid)
+indPlu.idw.grid.df  = dplyr::rename(indPlu.idw.grid.df, coords.x1 = x, coords.x2 = y)
 
-# MAPPING
+defExHyd.plot.map = build.static.ggmap(gridded.data.df = defExHyd.idw.grid.df,
+  boundaries.sf = wallonia.sf,
+  layer.error.bool = FALSE,
+  legend.error.bool = FALSE,
+  pretty_breaks.bool = TRUE,
+  title.chr = "déficit hydrique (mm)",
+  target.chr = "var1.pred",
+  legend.chr = ""
+)
+indPl.plot.map = build.static.ggmap(gridded.data.df = indPlu.idw.grid.df,
+  boundaries.sf = wallonia.sf,
+  layer.error.bool = FALSE,
+  legend.error.bool = FALSE,
+  pretty_breaks.bool = TRUE,
+  title.chr = "Indice pluviométrique (mm)",
+  target.chr = "var1.pred",
+  legend.chr = ""
+)
 
-# DYNAMIC
-# keeping what we need
-interpolated.df <- mlr.idw[c(4,5,6,7)]
-# making it spatial object class sf
-interpolated.sf <- st_as_sf(interpolated.df,coords = c("x","y"))
-# defining the crs
-st_crs(interpolated.sf) <- 3812
-# transforming to geographic CRS (EPSG = 4326)
-#interpolated.sf <- st_transform(interpolated.sf, crs = 4326)
+# MAPPING - Static
+defExHyd.idw.sf = st_as_sf(defExHyd.idw.sp)
 # Now we need to inject this point info into polygon centered arounds the points to fake a raster layer but which is interactive
-class(mlr.idw.sp) # SpatialPixelsDataFrame
-# making the gridded mlr.krg a raster
-grid.r <- raster::raster(mlr.idw.sp, values = TRUE)
+grid.r <- raster::raster(defExHyd.idw.sp, values = TRUE)
 # convert raster to polygons
 grid.pg.sp = raster::rasterToPolygons(grid.r, dissolve = F)
 class(grid.pg.sp) # SpatialPolygonsDataFrame
 # converting to sf for later joining
-grid.pg.sf <- st_as_sf(grid.pg.sp)
-st_crs(grid.pg.sf) <- 3812
-# transforming to geographic CRS (EPSG = 4326)
-#grid.sf <- st_transform(grid.pg.sf, crs = 4326)
+grid.pg.sf = st_as_sf(grid.pg.sp)
+# st_crs(grid.pg.sf) <- 3812
 # injecting the prediction and se data into the polygon grid doing a spatial join
-# interpolated.sf <- st_join(grid.sf, interpolated.sf) %>% select(one_of(c("response", "se")))
-interpolated.pg.sf = st_join(grid.pg.sf, interpolated.sf) #FIXME
-interpolated.pg.sf = interpolated.pg.sf[c(2,3,4)]
+defExHyd.idw.sf.pg.sf = st_join(grid.pg.sf, defExHyd.idw.sf) #FIXME
 # Do we have polygons ?
-head(interpolated.pg.sf)
+head(defExHyd.idw.sf.pg.sf)
 #project to geographic CRS
-interpolated.pg.sf <- st_transform(interpolated.pg.sf, crs = 4326)
+defExHyd.idw.sf.pg.sf <- st_transform(defExHyd.idw.sf.pg.sf, crs = 4326)
 #interacrtive mapping
-interactive.map = leafletize(interpolated.pg.sf, se.bool = FALSE)
+interactive.map = leafletize(defExHyd.idw.sf.pg.sf, se.bool = FALSE)
 
-#STATIC
-interpolated.sp = mlr.idw
-coordinates(interpolated.sp) <- ~x+y
-gridded(interpolated.sp) = TRUE
-pred.awful.map <- spplot(mlr.idw.sp["response"], do.log = T, colorkey = TRUE, main = mod.krg$learner$id)
-interpolated.sp.grid = as(interpolated.sp, "SpatialGridDataFrame")
-boundaries.sf <- st_as_sf(wallonia.sp, crs =  "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
-boundaries.sf <- st_transform(boundaries.sf, crs = "+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
-interpolated.df.grid = as.data.frame(interpolated.sp.grid)
-interpolated.df.grid  = dplyr::rename(interpolated.df.grid, coords.x1 = x, coords.x2 = y)
-
-# mapping static
-defExHyd.plot.map = build.static.ggmap(gridded.data.df = interpolated.df.grid,
-  boundaries.sf = boundaries.sf,
-  layer.error.bool = FALSE,
-  legend.error.bool = FALSE,
-  pretty_breaks.bool = TRUE,
-  title.chr = "déficit hydrique",
-  target.chr = "response",
-  legend.chr = "mm"
-)
-
-
-
-defExHyd.idw.grid = as(defExHyd.idw, "SpatialGridDataFrame") # ==> NA's
-ind_plu.idw.grid = as(ind_plu.idw, "SpatialGridDataFrame") # ==> NA's
-
-defExHyd.idw.df = as.data.frame(defExHyd.idw.grid)
-ind_plu.idw.df = as.data.frame(ind_plu.idw.grid)
-
-boundaries.sf <- st_as_sf(wallonia.sp, crs =  "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
-boundaries.sf <- st_transform(boundaries.sf, crs = "+proj=lcc +lat_1=49.83333333333334 +lat_2=51.16666666666666 +lat_0=50.797815 +lon_0=4.359215833333333 +x_0=649328 +y_0=665262 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
 
 # defining the function to create a palette of different levels of alpha for the choosen color
 alphaPal <- function(color) {
